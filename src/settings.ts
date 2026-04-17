@@ -26,7 +26,7 @@ import {
   exportVaultSyncPlansToFiles,
   exportVaultLoggerOutputToFiles,
 } from "./debugMode";
-import { exportQrCodeUri, importQrCodeUri } from "./importExport";
+import { exportSettingsUri, importQrCodeUri } from "./importExport";
 import {
   clearAllSyncMetaMapping,
   clearAllSyncPlanRecords,
@@ -409,41 +409,28 @@ class SyncConfigDirModal extends Modal {
   }
 }
 
-class ExportSettingsQrCodeModal extends Modal {
+class ExportSettingsUriModal extends Modal {
   plugin: RemotelySavePlugin;
   constructor(app: App, plugin: RemotelySavePlugin) {
     super(app);
     this.plugin = plugin;
   }
 
-  async onOpen() {
+  onOpen() {
     let { contentEl } = this;
 
     const t = (x: TransItemType, vars?: any) => {
       return this.plugin.i18n.t(x, vars);
     };
 
-    let rawUri = "";
-    let imgUri = "";
-    try {
-      const result = await exportQrCodeUri(
-        this.plugin.settings,
-        this.app.vault.getName(),
-        this.plugin.manifest.version
-      );
-      rawUri = result.rawUri;
-      imgUri = result.imgUri;
-    } catch (err) {
-      contentEl.createDiv({
-        text: `Error generating QR code: ${err}`,
-        cls: "qrcode-error"
-      });
-      log.error("Error generating QR code:", err);
-      return;
-    }
+    const rawUri = exportSettingsUri(
+      this.plugin.settings,
+      this.app.vault.getName(),
+      this.plugin.manifest.version
+    );
 
     const div1 = contentEl.createDiv();
-    t("modal_qr_shortdesc")
+    t("modal_export_shortdesc")
       .split("\n")
       .forEach((val) => {
         div1.createEl("p", {
@@ -455,24 +442,13 @@ class ExportSettingsQrCodeModal extends Modal {
     div2.createEl(
       "button",
       {
-        text: t("modal_qr_button"),
+        text: t("modal_export_button"),
       },
       (el) => {
         el.onclick = async () => {
           await navigator.clipboard.writeText(rawUri);
-          new Notice(t("modal_qr_button_notice"));
+          new Notice(t("modal_export_button_notice"));
         };
-      }
-    );
-
-    const div3 = contentEl.createDiv();
-    div3.createEl(
-      "img",
-      {
-        cls: "qrcode-img",
-      },
-      async (el) => {
-        el.src = imgUri;
       }
     );
   }
@@ -1513,7 +1489,7 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
       .addButton(async (button) => {
         button.setButtonText(t("settings_export_desc_button"));
         button.onClick(async () => {
-          new ExportSettingsQrCodeModal(this.app, this.plugin).open();
+          new ExportSettingsUriModal(this.app, this.plugin).open();
         });
       });
 

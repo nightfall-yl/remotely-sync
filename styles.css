@@ -42,10 +42,7 @@
   display: none;
 }
 
-.qrcode-img {
-  width: 350px;
-  height: 350px;
-}
+
 
 /* !important isn't great practice but it needs to overwrite other css classes */
 .remotely-sync-hidden {

@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 import cloneDeep from "lodash/cloneDeep";
 import pako from "pako";
 
@@ -14,7 +13,7 @@ import { DEFAULT_ONEDRIVE_CONFIG } from "./remoteForOnedrive";
 
 import { log } from "./moreOnLog";
 
-export const exportQrCodeUri = async (
+export const exportSettingsUri = (
   settings: RemotelySavePluginSettings,
   currentVaultName: string,
   pluginVersion: string
@@ -23,19 +22,15 @@ export const exportQrCodeUri = async (
   delete settings2.onedrive;
   delete settings2.vaultRandomID;
   const jsonStr = JSON.stringify(settings2);
-  
-  // Compress data to fit in QR code
+
+  // Compress data to fit in URI
   const compressed = pako.deflate(jsonStr);
   const base64 = btoa(String.fromCharCode.apply(null, compressed as unknown as number[]));
   const data = encodeURIComponent(base64);
   const vault = encodeURIComponent(currentVaultName);
   const version = encodeURIComponent(pluginVersion);
   const rawUri = `obsidian://${COMMAND_URI}?func=settings&version=${version}&vault=${vault}&data=${data}&compressed=1`;
-  const imgUri = await QRCode.toDataURL(rawUri, { errorCorrectionLevel: "M" });
-  return {
-    rawUri,
-    imgUri,
-  };
+  return rawUri;
 };
 
 export interface ProcessQrCodeResultType {

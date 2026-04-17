@@ -93,6 +93,6 @@ module.exports = {
     obsidian: "commonjs2 obsidian",
   },
   optimization: {
-    minimize: false,
+    minimize: true,
   },
 };
