@@ -1,0 +1,54 @@
+/* set the styles */
+
+.password-second-confirm {
+  font-weight: bold;
+}
+
+.password-disclaimer {
+  font-weight: bold;
+}
+
+.settings-auth-related {
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 18px;
+}
+
+.s3-disclaimer {
+  font-weight: bold;
+}
+.s3-hide {
+  display: none;
+}
+
+.onedrive-disclaimer {
+  font-weight: bold;
+}
+.onedrive-hide {
+  display: none;
+}
+
+.onedrive-auth-button-hide {
+  display: none;
+}
+
+.onedrive-revoke-auth-button-hide {
+  display: none;
+}
+
+.webdav-disclaimer {
+  font-weight: bold;
+}
+.webdav-hide {
+  display: none;
+}
+
+
+
+/* !important isn't great practice but it needs to overwrite other css classes */
+.third-party-sync-hidden {
+  display: none !important; 
+}
+
+.third-party-sync-show-status-bar {
+  display: flex !important;
+}

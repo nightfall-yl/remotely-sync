@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "sourceMap": true,
+    "module": "ESNext",
+    "target": "ESNext",
+    "allowJs": true,
+    "noImplicitAny": true,
+    "moduleResolution": "node",
+    // "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "importHelpers": true,
+    "isolatedModules": true,
+    "lib": [
+      "dom",
+      "es5",
+      "scripthost",
+      "es2015"
+    ]
+  },
+  "include": [
+    "**/*.ts"
+  ]
+}
