@@ -17,9 +17,6 @@ build
 dist
 dist-ssr
 *.local
-main.js
-927.main.js
-main.js.LICENSE.txt
 
 # Editor directories and files
 .vscode/*
