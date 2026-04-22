@@ -75,27 +75,6 @@ const config = {
     new (require('webpack').ProvidePlugin)({
       Buffer: ['buffer', 'Buffer'],
     }),
-    {
-      apply: (compiler) => {
-        compiler.hooks.afterEmit.tap('CopyToReleased', () => {
-          if (isProd) {
-            const releasedDir = path.join(__dirname, 'released');
-            if (!fs.existsSync(releasedDir)) {
-              fs.mkdirSync(releasedDir, { recursive: true });
-            }
-            const filesToCopy = ['main.js', 'manifest.json', 'styles.css'];
-            filesToCopy.forEach(file => {
-              const src = path.join(__dirname, file);
-              const dest = path.join(releasedDir, file);
-              if (fs.existsSync(src)) {
-                fs.copyFileSync(src, dest);
-                console.log(`Copied ${file} to released/`);
-              }
-            });
-          }
-        });
-      },
-    },
   ],
   mode: isProd ? 'production' : 'development',
   devtool: isProd ? false : 'inline-source-map',
