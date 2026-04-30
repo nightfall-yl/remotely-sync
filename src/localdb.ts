@@ -302,7 +302,11 @@ export const clearAllPrevSyncRecordsByVault = async (
   const keys = (await db.prevSyncRecordsTbl.keys()).filter((x) =>
     x.startsWith(`${vaultRandomID}\t`)
   );
-  await db.prevSyncRecordsTbl.removeItems(keys);
+  const ps = [] as Promise<void>[];
+  for (const key of keys) {
+    ps.push(db.prevSyncRecordsTbl.removeItem(key));
+  }
+  await Promise.all(ps);
 };
 
 export const savePrevSyncRecordsByVault = async (
