@@ -21,10 +21,8 @@ import {
 } from "./baseTypes";
 import { importQrCodeUri } from "./importExport";
 import {
-  insertDeleteRecordByVault,
-  insertRenameRecordByVault,
-  insertSyncPlanRecordByVault,
   loadFileHistoryTableByVault,
+  loadPrevSyncRecordsByVault,
   prepareDBs,
   InternalDBs,
   insertLoggerOutputByVault,
@@ -41,13 +39,11 @@ import {
 import { DEFAULT_S3_CONFIG } from "./remoteForS3";
 import { DEFAULT_WEBDAV_CONFIG } from "./remoteForWebdav";
 import { ThirdPartySyncSettingTab } from "./settings";
-import { SyncStatusType, isPasswordOk, getRemoteMetadata, getRemoteStates, getSyncPlan, doActualSync } from "./sync";
+import { SyncStatusType, isPasswordOk, getRemoteStates, getSyncPlanV3, doActualSyncV3 } from "./sync";
 import { messyConfigToNormal, normalConfigToMessy } from "./configPersist";
 import { ObsConfigDirFileType, listFilesInObsFolder } from "./obsFolderLister";
 import { I18n } from "./i18n";
 import type { LangType, LangTypeAndAuto, TransItemType } from "./i18n";
-
-import {DeletionOnRemote, deserializeMetadataOnRemote, MetadataOnRemote} from "./metadataOnRemote";
 import { SyncAlgoV2Modal } from "./syncAlgoV2Notice";
 import { applyPresetRulesInplace } from "./presetRules";
 
@@ -285,11 +281,7 @@ export default class ThirdPartySyncPlugin extends Plugin {
         this.settings.password
       );
 
-      // Step 5 - get remote metadata
-      await notifyFunc(triggerSource, 4);
-      const metadataFile = await getRemoteMetadata(remoteRsp.Contents, client, this.settings.password);
-
-      // Step 6 - get remote states
+      // Step 5 - get remote states (skip metadata in V3)
       await notifyFunc(triggerSource, 5);
       const remoteStates = await getRemoteStates(
         remoteRsp.Contents, 
@@ -299,21 +291,39 @@ export default class ThirdPartySyncPlugin extends Plugin {
         this.settings.password
       );
 
-      // Step 7 - get local files
+      // Step 6 - get local files
       await notifyFunc(triggerSource, 6);
       const local = this.app.vault.getAllLoadedFiles();
-      const localHistory = await this.getLocalHistory();
       let localConfigDirContents: ObsConfigDirFileType[] = await listFilesInObsFolder(this.app.vault, this.manifest.id, this.settings.syncTrash);
-      const origMetadataOnRemote = await this.fetchMetadataFromRemote(metadataFile, client);
+      
+      // Step 7 - load prevSync records for V3
+      await notifyFunc(triggerSource, 4);
+      const prevSyncRecords = await loadPrevSyncRecordsByVault(this.db, this.vaultRandomID);
 
-      // Step 8 - generate sync plan
+      // Step 8 - generate sync plan using V3
       await notifyFunc(triggerSource, 7);
       const {
         plan, sortedKeys, deletions, sizesGoWrong
-      } = await this.getSyncPlan(remoteStates, local, localConfigDirContents, origMetadataOnRemote, localHistory, client, triggerSource);
+      } = await getSyncPlanV3(
+        remoteStates,
+        local,
+        localConfigDirContents,
+        prevSyncRecords,
+        client.serviceType,
+        triggerSource,
+        this.app.vault,
+        this.settings.syncConfigDir,
+        this.settings.syncTrash,
+        this.settings.syncBookmarks,
+        this.app.vault.configDir,
+        this.settings.syncUnderscoreItems,
+        this.settings.skipSizeLargerThan,
+        this.settings.password,
+        this.settings.syncDirection ?? "bidirectional"
+      );
 
-      // Step 9 - execute sync
-      await this.doActualSync(client, plan, sortedKeys, metadataFile, origMetadataOnRemote, sizesGoWrong, deletions, self);
+      // Step 9 - execute sync using V3
+      await this.doActualSyncV3(client, plan, sortedKeys, sizesGoWrong, deletions, self);
 
       // Step 10 - update last synced time
       this.settings.lastSynced = Date.now();
@@ -367,6 +377,56 @@ export default class ThirdPartySyncPlugin extends Plugin {
     }
     return false;
   };
+
+  private async doActualSyncV3(client: RemoteClient, plan: SyncPlanType, sortedKeys: string[], sizesGoWrong: FileOrFolderMixedState[], deletions: DeletionOnRemote[], self: this) {
+    const t = (x: TransItemType, vars?: any) => {
+      return this.i18n.t(x, vars);
+    };
+    const effectiveConcurrency =
+      client.serviceType === "webdav"
+        ? 1
+        : this.settings.concurrency;
+    return doActualSyncV3(
+      client,
+      this.db,
+      this.vaultRandomID,
+      this.app.vault,
+      plan,
+      sortedKeys,
+      sizesGoWrong,
+      (key: string) => self.trash(key),
+      this.settings.password,
+      this.settings.lastSynced,
+      effectiveConcurrency,
+      (ss: FileOrFolderMixedState[]) => {
+        new SizesConflictModal(
+          self.app,
+          self,
+          this.settings.skipSizeLargerThan,
+          ss,
+          t,
+          async () => {
+            await self.saveSettings();
+          }
+        ).open();
+      },
+      undefined,
+      this.settings.protectModifyPercentage,
+      (errorMsg: string) => {
+        const parts = errorMsg.split("|");
+        if (parts[0] === "syncrun_abort_protectmodifypercentage") {
+          const [_, threshold, realCount, allCount, percent] = parts;
+          const msg = t("syncrun_abort_protectmodifypercentage", {
+            protectModifyPercentage: parseInt(threshold),
+            realModifyDeleteCount: parseInt(realCount),
+            allFilesCount: parseInt(allCount),
+            percent: percent,
+          });
+          new Notice(msg, 0);
+        }
+      }
+    );
+  }
 
   private async doActualSync(client: RemoteClient, plan: SyncPlanType, sortedKeys: string[], metadataFile: FileOrFolderMixedState, origMetadataOnRemote: MetadataOnRemote, sizesGoWrong: FileOrFolderMixedState[], deletions: DeletionOnRemote[], self: this) {
     const t = (x: TransItemType, vars?: any) => {
@@ -1125,25 +1185,57 @@ export default class ThirdPartySyncPlugin extends Plugin {
       return;
     }
 
-    let checkingMetadata = false;
+    let checkingRemote = false;
 
     const syncOnRemote = async () => {
-      if (this.syncStatus !== "idle" || checkingMetadata) {
+      if (this.syncStatus !== "idle" || checkingRemote) {
         return;
       }
 
-      checkingMetadata = true;
-      const metadataMtime = await this.getMetadataMtime();
-      checkingMetadata = false;
+      checkingRemote = true;
+      try {
+        const client = this.getRemoteClient(this);
+        const remoteRsp = await client.listFromRemote();
+        const remoteStates = await getRemoteStates(
+          remoteRsp.Contents,
+          this.db,
+          this.vaultRandomID,
+          client.serviceType,
+          this.settings.password
+        );
+        const prevSyncRecords = await loadPrevSyncRecordsByVault(this.db, this.vaultRandomID);
+        const prevSyncMap = new Map(prevSyncRecords.map(r => [r.key, r]));
 
-      if (metadataMtime === undefined) {
-        return false;
-      }
+        // Check if remote has files that are not in prevSync (new remote files)
+        // or if remote is missing files that were in prevSync (remote deletions)
+        let hasRemoteChanges = false;
+        for (const remote of remoteStates) {
+          if (!remote.key) continue;
+          const prev = prevSyncMap.get(remote.key);
+          if (!prev || prev.mtime !== remote.mtimeRemote) {
+            hasRemoteChanges = true;
+            break;
+          }
+        }
+        if (!hasRemoteChanges) {
+          for (const prev of prevSyncRecords) {
+            const remoteExists = remoteStates.some(r => r.key === prev.key);
+            if (!remoteExists) {
+              hasRemoteChanges = true;
+              break;
+            }
+          }
+        }
 
-      if (metadataMtime !== this.settings.lastSynced) {
-        log.debug("Sync on Remote ran | Remote Metadata:", metadataMtime + ", Last Synced:", this.settings.lastSynced);
-        this.syncRun("auto");
-        return true;
+        if (hasRemoteChanges) {
+          log.debug("Sync on Remote ran | Remote changes detected");
+          this.syncRun("auto");
+          return true;
+        }
+      } catch (error) {
+        log.debug("Sync on Remote check failed:", error);
+      } finally {
+        checkingRemote = false;
       }
     };
 
@@ -1228,18 +1320,8 @@ export default class ThirdPartySyncPlugin extends Plugin {
   }
   
   async getMetadataMtime() {
-    const client = this.getRemoteClient(this);
-    
-    const remoteFiles = await client.listFromRemote();
-    const remoteMetadataFile = await getRemoteMetadata(remoteFiles.Contents, client, this.settings.password);
-
-    const lastSynced = remoteMetadataFile.mtimeRemote;
-
-    if (lastSynced === undefined && this.settings.lastSynced !== undefined) {
-      return this.settings.lastSynced;
-    }
-
-    return lastSynced;
+    // V3: No remote metadata file, use lastSynced from settings
+    return this.settings.lastSynced;
   }
 
   private async getSyncPlan2() {
@@ -1253,8 +1335,6 @@ export default class ThirdPartySyncPlugin extends Plugin {
       this.settings.password
     );
 
-    const metadataFile = await getRemoteMetadata(remoteRsp.Contents, client, this.settings.password);
-
     const remoteStates = await getRemoteStates(
       remoteRsp.Contents, 
       this.db, 
@@ -1264,14 +1344,28 @@ export default class ThirdPartySyncPlugin extends Plugin {
     );
 
     const local = this.app.vault.getAllLoadedFiles();
-    const localHistory = await this.getLocalHistory();
     let localConfigDirContents: ObsConfigDirFileType[] = await listFilesInObsFolder(this.app.vault, this.manifest.id, this.settings.syncTrash);
-    const origMetadataOnRemote = await this.fetchMetadataFromRemote(metadataFile, client);
-
+    const prevSyncRecords = await loadPrevSyncRecordsByVault(this.db, this.vaultRandomID);
 
     const {
       plan
-    } = await this.getSyncPlan(remoteStates, local, localConfigDirContents, origMetadataOnRemote, localHistory, client, "auto");
+    } = await getSyncPlanV3(
+      remoteStates,
+      local,
+      localConfigDirContents,
+      prevSyncRecords,
+      client.serviceType,
+      "auto",
+      this.app.vault,
+      this.settings.syncConfigDir,
+      this.settings.syncTrash,
+      this.settings.syncBookmarks,
+      this.app.vault.configDir,
+      this.settings.syncUnderscoreItems,
+      this.settings.skipSizeLargerThan,
+      this.settings.password,
+      this.settings.syncDirection ?? "bidirectional"
+    );
     return plan;
   }
 

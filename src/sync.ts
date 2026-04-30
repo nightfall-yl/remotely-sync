@@ -22,11 +22,12 @@ import {
   encryptStringToBase64url,
   getSizeFromOrigToEnc,
 } from "./encrypt";
-import type { FileFolderHistoryRecord, InternalDBs } from "./localdb";
+import type { FileFolderHistoryRecord, InternalDBs, PrevSyncRecord } from "./localdb";
 import {
   clearDeleteRenameHistoryOfKeyAndVault,
   getSyncMetaMappingByRemoteKeyAndVault,
   upsertSyncMetaMappingDataByVault,
+  savePrevSyncRecordsByVault,
 } from "./localdb";
 import {
   isHiddenPath,
@@ -39,16 +40,13 @@ import {
 } from "./misc";
 import { RemoteClient } from "./remote";
 import {
-  MetadataOnRemote,
   DeletionOnRemote,
-  serializeMetadataOnRemote,
-  deserializeMetadataOnRemote,
   DEFAULT_FILE_NAME_FOR_METADATAONREMOTE,
   DEFAULT_FILE_NAME_FOR_METADATAONREMOTE2,
   LEGACY_FILE_NAME_FOR_METADATAONREMOTE,
   LEGACY_FILE_NAME_FOR_METADATAONREMOTE2,
   FILE_NAME_FOR_BOOKMARK_FILE,
-  isEqualMetadataOnRemote, FILE_NAME_FOR_DATA_JSON,
+  FILE_NAME_FOR_DATA_JSON,
 } from "./metadataOnRemote";
 import {isInsideObsFolder, isInsideTrashFolder, ObsConfigDirFileType} from "./obsFolderLister";
 
@@ -1064,6 +1062,509 @@ const SIZES_GO_WRONG_DECISIONS: Set<DecisionType> = new Set([
   "errorRemoteTooLargeConflictLocal",
 ]);
 
+export const getSyncPlanV3 = async (
+  remoteStates: FileOrFolderMixedState[],
+  local: TAbstractFile[],
+  localConfigDirContents: ObsConfigDirFileType[] | undefined,
+  prevSyncRecords: PrevSyncRecord[],
+  remoteType: SUPPORTED_SERVICES_TYPE,
+  triggerSource: SyncTriggerSourceType,
+  vault: Vault,
+  syncConfigDir: boolean,
+  syncTrashDir: boolean,
+  syncBookmarks: boolean,
+  configDir: string,
+  syncUnderscoreItems: boolean,
+  skipSizeLargerThan: number,
+  password: string = "",
+  syncDirection: SyncDirectionType = "bidirectional"
+) => {
+  // Build prevSync map for quick lookup
+  const prevSyncMap = new Map<string, PrevSyncRecord>();
+  for (const record of prevSyncRecords) {
+    prevSyncMap.set(record.key, record);
+  }
+
+  // Get mixed states from local and remote (without delete history)
+  const mixedStates = await ensembleMixedStates(
+    remoteStates,
+    local,
+    localConfigDirContents,
+    [], // no remote delete history in V3
+    [], // no local file history in V3
+    syncConfigDir,
+    syncTrashDir,
+    syncBookmarks,
+    configDir,
+    syncUnderscoreItems,
+    password
+  );
+
+  // Add prevSync info to mixed states
+  for (const [key, record] of prevSyncMap) {
+    if (mixedStates[key] === undefined) {
+      // File existed in prevSync but not in local or remote now
+      mixedStates[key] = {
+        key: key,
+        existLocal: false,
+        existRemote: false,
+      };
+    }
+    // Mark that this file was in prevSync
+    mixedStates[key].prevSync = record;
+  }
+
+  const sortedKeys = Object.keys(mixedStates).sort(
+    (k1, k2) => k2.length - k1.length
+  );
+
+  const sizesGoWrong: FileOrFolderMixedState[] = [];
+  const deletions: DeletionOnRemote[] = [];
+
+  const keptFolder = new Set<string>();
+  for (let i = 0; i < sortedKeys.length; ++i) {
+    const key = sortedKeys[i];
+    const val = mixedStates[key];
+
+    if (key.endsWith("/")) {
+      await assignOperationToFolderInplaceV3(val, keptFolder, vault, password, syncDirection);
+    } else {
+      assignOperationToFileInplaceV3(
+        val,
+        keptFolder,
+        skipSizeLargerThan,
+        password,
+        syncDirection
+      );
+    }
+
+    if (SIZES_GO_WRONG_DECISIONS.has(val.decision)) {
+      sizesGoWrong.push(val);
+    }
+
+    if (DELETION_DECISIONS.has(val.decision)) {
+      if (val.decision === "uploadLocalDelHistToRemote") {
+        deletions.push({
+          key: key,
+          actionWhen: Date.now(),
+        });
+      } else if (val.decision === "keepRemoteDelHist") {
+        deletions.push({
+          key: key,
+          actionWhen: Date.now(),
+        });
+      } else if (val.decision === "uploadLocalDelHistToRemoteFolder") {
+        deletions.push({
+          key: key,
+          actionWhen: Date.now(),
+        });
+      } else if (val.decision === "keepRemoteDelHistFolder") {
+        deletions.push({
+          key: key,
+          actionWhen: Date.now(),
+        });
+      } else {
+        throw Error(`do not know how to delete for decision ${val.decision}`);
+      }
+    }
+  }
+
+  const currTs = Date.now();
+  const currTsFmt = unixTimeToStr(currTs);
+  const plan = {
+    ts: currTs,
+    tsFmt: currTsFmt,
+    remoteType: remoteType,
+    syncTriggerSource: triggerSource,
+    mixedStates: mixedStates,
+  } as SyncPlanType;
+  return {
+    plan: plan,
+    sortedKeys: sortedKeys,
+    deletions: deletions,
+    sizesGoWrong: sizesGoWrong,
+  };
+};
+
+const assignOperationToFileInplaceV3 = (
+  origRecord: FileOrFolderMixedState,
+  keptFolder: Set<string>,
+  skipSizeLargerThan: number,
+  password: string = "",
+  syncDirection: SyncDirectionType = "bidirectional"
+) => {
+  let r = origRecord;
+
+  if (r.key.endsWith("/")) {
+    return r;
+  }
+
+  const existLocal = r.existLocal ?? false;
+  const existRemote = r.existRemote ?? false;
+  const existPrevSync = r.prevSync !== undefined;
+  const prevSyncMtime = r.prevSync?.mtime ?? 0;
+  const prevSyncSize = r.prevSync?.size ?? 0;
+
+  const isPullOnlyMode = syncDirection === "incremental_pull_only" || syncDirection === "incremental_pull_and_delete_only";
+  const isPushOnlyMode = syncDirection === "incremental_push_only" || syncDirection === "incremental_push_and_delete_only";
+  const isPullDeleteMode = syncDirection === "incremental_pull_and_delete_only";
+  const isPushDeleteMode = syncDirection === "incremental_push_and_delete_only";
+
+  const sizeLocalComp = password === "" ? r.sizeLocal : r.sizeLocalEnc;
+  const sizeRemoteComp = password === "" ? r.sizeRemote : r.sizeRemoteEnc;
+
+  // Sanity checks
+  if (existLocal && (r.mtimeLocal === undefined || r.mtimeLocal <= 0)) {
+    throw Error(`Error: Abnormal last modified time locally: ${JSON.stringify(r, null, 2)}`);
+  }
+  if (existRemote && (r.mtimeRemote === undefined || r.mtimeRemote <= 0)) {
+    throw Error(`Error: Abnormal last modified time remotely: ${JSON.stringify(r, null, 2)}`);
+  }
+
+  // V3 Three-way merge logic
+  // Cases:
+  // 1. local + remote + prevSync -> compare mtimes
+  // 2. local + !remote + prevSync -> remote deleted
+  // 3. !local + remote + prevSync -> local deleted
+  // 4. local + !remote + !prevSync -> new local file, upload
+  // 5. !local + remote + !prevSync -> new remote file, download
+  // 6. !local + !remote + prevSync -> both deleted, skip
+
+  if (existLocal && existRemote) {
+    // Both exist - compare mtimes
+    if (r.mtimeLocal === r.mtimeRemote) {
+      if (sizeLocalComp === sizeRemoteComp) {
+        r.decision = "skipUploading";
+        r.decisionBranch = 1;
+      } else {
+        r.decision = "uploadLocalToRemote";
+        r.decisionBranch = 2;
+      }
+    } else if (r.mtimeLocal > r.mtimeRemote) {
+      // Local is newer
+      if (isPullOnlyMode) {
+        r.decision = "skipUploading";
+        r.decisionBranch = 51;
+      } else {
+        r.decision = "uploadLocalToRemote";
+        r.decisionBranch = 4;
+      }
+    } else {
+      // Remote is newer
+      if (isPushOnlyMode) {
+        r.decision = "skipUploading";
+        r.decisionBranch = 53;
+      } else {
+        r.decision = "downloadRemoteToLocal";
+        r.decisionBranch = 5;
+      }
+    }
+    keptFolder.add(getParentFolder(r.key));
+    return r;
+  }
+
+  if (existLocal && !existRemote) {
+    if (existPrevSync) {
+      // Remote was deleted
+      if (isPushDeleteMode && !isPullOnlyMode) {
+        // In push-and-delete mode, local deletion propagates to remote
+        // But here remote is already gone, so just clean up
+        r.decision = "skipUploading";
+        r.decisionBranch = 60;
+      } else if (isPullDeleteMode) {
+        // In pull-and-delete mode, remote deletion should propagate to local
+        r.decision = "keepRemoteDelHist";
+        r.decisionBranch = 61;
+      } else if (isPushOnlyMode) {
+        // Push-only without delete: keep local
+        r.decision = "skipUploading";
+        r.decisionBranch = 62;
+      } else {
+        // Bidirectional: remote deleted, delete local too
+        r.decision = "keepRemoteDelHist";
+        r.decisionBranch = 7;
+      }
+    } else {
+      // New local file, upload to remote
+      if (isPullOnlyMode) {
+        r.decision = "skipUploading";
+        r.decisionBranch = 63;
+      } else {
+        r.decision = "uploadLocalToRemote";
+        r.decisionBranch = 64;
+      }
+      keptFolder.add(getParentFolder(r.key));
+    }
+    return r;
+  }
+
+  if (!existLocal && existRemote) {
+    if (existPrevSync) {
+      // Local was deleted
+      if (isPullDeleteMode && !isPushOnlyMode) {
+        // In pull-and-delete mode, keep remote (don't delete)
+        r.decision = "skipUploading";
+        r.decisionBranch = 65;
+      } else if (isPushDeleteMode) {
+        // In push-and-delete mode, local deletion propagates to remote
+        r.decision = "uploadLocalDelHistToRemote";
+        r.decisionBranch = 66;
+      } else if (isPullOnlyMode) {
+        // Pull-only without delete: download remote
+        r.decision = "downloadRemoteToLocal";
+        r.decisionBranch = 67;
+      } else {
+        // Bidirectional: local deleted, delete remote too
+        r.decision = "uploadLocalDelHistToRemote";
+        r.decisionBranch = 6;
+      }
+    } else {
+      // New remote file, download to local
+      if (isPushOnlyMode) {
+        r.decision = "skipUploading";
+        r.decisionBranch = 68;
+      } else {
+        r.decision = "downloadRemoteToLocal";
+        r.decisionBranch = 69;
+      }
+      keptFolder.add(getParentFolder(r.key));
+    }
+    return r;
+  }
+
+  if (!existLocal && !existRemote && existPrevSync) {
+    // Both deleted
+    r.decision = "skipUploading";
+    r.decisionBranch = 70;
+    return r;
+  }
+
+  if (!existLocal && !existRemote && !existPrevSync) {
+    // Should not happen, but skip just in case
+    r.decision = "skipUploading";
+    r.decisionBranch = 71;
+    return r;
+  }
+
+  throw Error(`no decision for ${JSON.stringify(r)}`);
+};
+
+const assignOperationToFolderInplaceV3 = async (
+  origRecord: FileOrFolderMixedState,
+  keptFolder: Set<string>,
+  vault: Vault,
+  password: string = "",
+  syncDirection: SyncDirectionType = "bidirectional"
+) => {
+  let r = origRecord;
+
+  if (!r.key.endsWith("/")) {
+    return r;
+  }
+
+  const existLocal = r.existLocal ?? false;
+  const existRemote = r.existRemote ?? false;
+  const existPrevSync = r.prevSync !== undefined;
+
+  const isPullOnlyMode = syncDirection === "incremental_pull_only" || syncDirection === "incremental_pull_and_delete_only";
+  const isPushOnlyMode = syncDirection === "incremental_push_only" || syncDirection === "incremental_push_and_delete_only";
+  const isPullDeleteMode = syncDirection === "incremental_pull_and_delete_only";
+  const isPushDeleteMode = syncDirection === "incremental_push_and_delete_only";
+
+  if (!keptFolder.has(r.key)) {
+    // Folder does NOT have any must-be-kept children
+
+    if (existLocal && existRemote) {
+      r.decision = "skipFolder";
+      r.decisionBranch = 10;
+    } else if (existLocal && !existRemote) {
+      if (existPrevSync && (isPullDeleteMode || (!isPushOnlyMode && !isPullOnlyMode))) {
+        // Remote deleted the folder
+        r.decision = "keepRemoteDelHistFolder";
+        r.decisionBranch = 9;
+      } else {
+        r.decision = "createFolder";
+        r.decisionBranch = 15;
+      }
+    } else if (!existLocal && existRemote) {
+      if (existPrevSync && (isPushDeleteMode || (!isPushOnlyMode && !isPullOnlyMode))) {
+        // Local deleted the folder
+        r.decision = "uploadLocalDelHistToRemoteFolder";
+        r.decisionBranch = 8;
+      } else {
+        r.decision = "createFolder";
+        r.decisionBranch = 11;
+      }
+    } else {
+      // !existLocal && !existRemote
+      r.decision = "skipFolder";
+      r.decisionBranch = 72;
+    }
+  } else {
+    // Folder has must-be-kept children
+    keptFolder.add(getParentFolder(r.key));
+    if (existLocal && existRemote) {
+      r.decision = "skipFolder";
+      r.decisionBranch = 12;
+    } else if (existLocal || existRemote) {
+      r.decision = "createFolder";
+      r.decisionBranch = 13;
+    } else {
+      throw Error(
+        `Error: Folder ${r.key} doesn't exist locally and remotely but is marked must be kept. Abort.`
+      );
+    }
+  }
+
+  keptFolder.delete(r.key);
+  return r;
+};
+
+export const doActualSyncV3 = async (
+  client: RemoteClient,
+  db: InternalDBs,
+  vaultRandomID: string,
+  vault: Vault,
+  syncPlan: SyncPlanType,
+  sortedKeys: string[],
+  sizesGoWrong: FileOrFolderMixedState[],
+  localDeleteFunc: any,
+  password: string = "",
+  lastSynced?: number,
+  concurrency: number = 1,
+  callbackSizesGoWrong?: any,
+  callbackSyncProcess?: any,
+  protectModifyPercentage?: number,
+  callbackProtectModifyPercentage?: (errorMsg: string) => void
+) => {
+  if (sizesGoWrong.length > 0) {
+    log.debug(`some sizes are larger than the threshold, abort and show hints`);
+    callbackSizesGoWrong(sizesGoWrong);
+    return undefined;
+  }
+
+  log.debug(`concurrency === ${concurrency}`);
+
+  const { folderCreationOps, deletionOps, uploadDownloads, realTotalCount, allFilesCount, realModifyDeleteCount } = splitThreeSteps(syncPlan, sortedKeys);
+
+  // Check protectModifyPercentage
+  if (protectModifyPercentage !== undefined && protectModifyPercentage >= 0 && allFilesCount > 0) {
+    log.debug(`protectModifyPercentage: ${protectModifyPercentage}`);
+    log.debug(`allFilesCount: ${allFilesCount}, realModifyDeleteCount: ${realModifyDeleteCount}`);
+
+    if (protectModifyPercentage === 100 && realModifyDeleteCount === allFilesCount) {
+      // Allow sync with 100% modification
+    } else if (realModifyDeleteCount * 100 >= allFilesCount * protectModifyPercentage) {
+      const percent = ((100 * realModifyDeleteCount) / allFilesCount).toFixed(1);
+      const errorMsg = `syncrun_abort_protectmodifypercentage|${protectModifyPercentage}|${realModifyDeleteCount}|${allFilesCount}|${percent}`;
+      log.debug(`aborting sync due to protectModifyPercentage: ${errorMsg}`);
+      if (callbackProtectModifyPercentage) {
+        callbackProtectModifyPercentage(errorMsg);
+      }
+      return undefined;
+    }
+  }
+  const nested = [folderCreationOps, deletionOps, uploadDownloads];
+
+  log.debug("folderCreationOps: ", folderCreationOps.length,
+  " deletionOps: ", deletionOps.length,
+  " uploadDownloads: ", uploadDownloads.length);
+
+  const queue = new PQueue({ concurrency: concurrency, autoStart: true });
+  let queueTotal = realTotalCount;
+  let queueIndex = 0;
+
+  log.debug("Checking if lastSynced is set: ", lastSynced, "== -1?: ", lastSynced == -1);
+
+  const potentialErrors: Error[] = [];
+
+  for (const operation of nested) {
+    for (const singleLevelOps of operation) {
+      if (singleLevelOps === undefined || singleLevelOps === null) {
+        continue;
+      }
+
+      for (const val of singleLevelOps) {
+        const key = val.key;
+        const isDeleteOp = operation === deletionOps;
+
+        if (lastSynced == -1) {
+          const skipKeys = [".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/core-plugins-migration.json", ".obsidian/core-plugins.json", ".obsidian/graph.json", ".obsidian/workspace.json"];
+          if (val.existRemote && skipKeys.includes(key)) {
+            log.debug("downloading from remote for first sync: ", key);
+            val.decision = "downloadRemoteToLocal";
+          }
+        }
+
+        const syncCall = queue.add(async () => {
+          const result = await syncIndividualItem(
+            key,
+            isDeleteOp,
+            val,
+            vaultRandomID,
+            client,
+            db,
+            vault,
+            localDeleteFunc,
+            password
+          );
+
+          if (!isDeleteOp && !val.decision!.startsWith("createFolder")) {
+            queueIndex++;
+            if (callbackSyncProcess !== undefined) {
+              await callbackSyncProcess(queueIndex, queueTotal);
+            }
+          }
+
+          return result;
+        });
+
+        syncCall.catch((error) => {
+          const message = `${key}: ${error.message}`;
+          potentialErrors.push(new Error(message));
+
+          if (potentialErrors.length >= 3) {
+            potentialErrors.push(new Error("too many errors, stop the remaining tasks"));
+            queue.pause();
+            queue.clear();
+          }
+        })
+      }
+    }
+  }
+
+  await queue.onIdle();
+
+  if (potentialErrors.length > 0) {
+    throw new AggregateError(potentialErrors);
+  }
+
+  log.debug(`V3 sync finished, saving prevSync records`);
+
+  // Save current state as prevSync records
+  const prevSyncRecords: PrevSyncRecord[] = [];
+  for (const key of sortedKeys) {
+    const state = syncPlan.mixedStates[key];
+    if (state.decision === "skipUploading" || state.decision === "uploadLocalToRemote" || state.decision === "downloadRemoteToLocal" || state.decision === "createFolder" || state.decision === "skipFolder") {
+      // Only save files/folders that exist after sync
+      const mtime = state.mtimeLocal ?? state.mtimeRemote ?? Date.now();
+      const size = state.sizeLocal ?? state.sizeRemote ?? 0;
+      prevSyncRecords.push({
+        key: key,
+        mtime: mtime,
+        size: size,
+        keyType: key.endsWith("/") ? "folder" : "file",
+        vaultRandomID: vaultRandomID,
+      });
+    }
+  }
+  await savePrevSyncRecordsByVault(db, vaultRandomID, prevSyncRecords);
+
+  log.debug(`V3 sync finished, prevSync records saved`);
+
+  return Date.now();
+};
+
 export const getSyncPlan = async (
   remoteStates: FileOrFolderMixedState[],
   local: TAbstractFile[],
@@ -1506,20 +2007,15 @@ export const doActualSync = async (
     return undefined;
   }
 
-  // Get and print sync info
-
   log.debug(`concurrency === ${concurrency}`);
 
   const { folderCreationOps, deletionOps, uploadDownloads, realTotalCount, allFilesCount, realModifyDeleteCount } =  splitThreeSteps(syncPlan, sortedKeys);
 
-  // Check protectModifyPercentage
   if (protectModifyPercentage !== undefined && protectModifyPercentage >= 0 && allFilesCount > 0) {
     log.debug(`protectModifyPercentage: ${protectModifyPercentage}`);
     log.debug(`allFilesCount: ${allFilesCount}, realModifyDeleteCount: ${realModifyDeleteCount}`);
 
-    // Special case for 100% - allow if all files will be modified/deleted
     if (protectModifyPercentage === 100 && realModifyDeleteCount === allFilesCount) {
-      // Allow sync with 100% modification
     } else if (realModifyDeleteCount * 100 >= allFilesCount * protectModifyPercentage) {
       const percent = ((100 * realModifyDeleteCount) / allFilesCount).toFixed(1);
       const errorMsg = `syncrun_abort_protectmodifypercentage|${protectModifyPercentage}|${realModifyDeleteCount}|${allFilesCount}|${percent}`;
@@ -1536,15 +2032,11 @@ export const doActualSync = async (
   " deletionOps: ", deletionOps.length,
   " uploadDownloads: ", uploadDownloads.length);
 
-  // Prepare sync queue
-
   const queue = new PQueue({ concurrency: concurrency, autoStart: true });
-  let queueTotal = realTotalCount; // Use realTotalCount as the denominator - only items that need actual sync
+  let queueTotal = realTotalCount;
   let queueIndex = 0;
 
   log.debug("Checking if lastSynced is set: ", lastSynced, "== -1?: ", lastSynced == -1);
-
-  // Sync files in order of folder creation, deletions and uploads/downloads
 
   const potentialErrors: Error[] = [];
 
@@ -1558,9 +2050,6 @@ export const doActualSync = async (
         const key = val.key;
         const isDeleteOp = operation === deletionOps;
 
-        // queueTotal is already set to realTotalCount, no need to increment here
-
-        // Filter auto-created items from first sync if exist on remote
         if (lastSynced == -1) {
           const skipKeys = [".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/core-plugins-migration.json", ".obsidian/core-plugins.json", ".obsidian/graph.json", ".obsidian/workspace.json"];
           if (val.existRemote && skipKeys.includes(key)) {
@@ -1582,8 +2071,6 @@ export const doActualSync = async (
             password
           );
 
-          // Only update progress for upload/download operations
-          // Deletions and folder creations are operations but not counted in queueTotal
           if (!isDeleteOp && !val.decision!.startsWith("createFolder")) {
             queueIndex++;
             if (callbackSyncProcess !== undefined) {
@@ -1610,29 +2097,11 @@ export const doActualSync = async (
 
   await queue.onIdle();
 
-  // Sync end
-
   if (potentialErrors.length > 0) {
     throw new AggregateError(potentialErrors);
   }
 
-  log.debug(`start syncing extra data lastly`);
+  log.debug(`V2 sync finished, no metadata upload in V3 mode`);
 
-  // Skip uploading metadata file to match remotely-save behavior
-  // const newMetadataMtime = await uploadExtraMeta(
-  //   client,
-  //   vault,
-  //   metadataFile,
-  //   origMetadata,
-  //   deletions,
-  //   password
-  // );
-  const newMetadataMtime: number | undefined = undefined;
-
-  log.debug(`finish syncing extra data lastly, metadata file upload skipped`);
-
-  // 增加一个小延迟，确保远端服务器有足够时间处理所有请求
-  await new Promise(resolve => setTimeout(resolve, 1000));
-
-  return newMetadataMtime;
+  return Date.now();
 };

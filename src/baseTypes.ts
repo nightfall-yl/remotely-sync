@@ -160,6 +160,7 @@ export interface FileOrFolderMixedState {
   decisionBranch?: number;
   syncDone?: "done";
   remoteEncryptedKey?: string;
+  prevSync?: { mtime: number; size: number; keyType: "folder" | "file" };
 
   mtimeLocalFmt?: string;
   mtimeRemoteFmt?: string;

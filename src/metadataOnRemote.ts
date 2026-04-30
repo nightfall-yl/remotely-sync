@@ -9,10 +9,10 @@ const DEFAULT_README_FOR_METADATAONREMOTE =
 const DEFAULT_VERSION_FOR_METADATAONREMOTE = "20220220";
 
 export const DEFAULT_FILE_NAME_FOR_METADATAONREMOTE =
-  "_third-party-sync-metadata-on-remote.json";
+  ".third-party-sync-metadata-on-remote.json";
 
 export const DEFAULT_FILE_NAME_FOR_METADATAONREMOTE2 =
-  "_third-party-sync-metadata-on-remote.bin";
+  ".third-party-sync-metadata-on-remote.bin";
 
 // Backward compatibility with remotely-save metadata names.
 export const LEGACY_FILE_NAME_FOR_METADATAONREMOTE =

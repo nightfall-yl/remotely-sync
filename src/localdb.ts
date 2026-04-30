@@ -9,15 +9,15 @@ import { statFix, toText, unixTimeToStr } from "./misc";
 
 import { log } from "./moreOnLog";
 
-const DB_VERSION_NUMBER_IN_HISTORY = [20211114, 20220108, 20220326];
-export const DEFAULT_DB_VERSION_NUMBER: number = 20220326;
+const DB_VERSION_NUMBER_IN_HISTORY = [20211114, 20220108, 20220326, 20250430];
+export const DEFAULT_DB_VERSION_NUMBER: number = 20250430;
 export const DEFAULT_DB_NAME = "remotelysavedb";
 export const DEFAULT_TBL_VERSION = "schemaversion";
 export const DEFAULT_TBL_FILE_HISTORY = "filefolderoperationhistory";
 export const DEFAULT_TBL_SYNC_MAPPING = "syncmetadatahistory";
 export const DEFAULT_SYNC_PLANS_HISTORY = "syncplanshistory";
 export const DEFAULT_TBL_VAULT_RANDOM_ID_MAPPING = "vaultrandomidmapping";
-export const DEFAULT_TBL_LOGGER_OUTPUT = "loggeroutput";
+export const DEFAULT_TBL_PREV_SYNC_RECORDS = "prevsyncrecords";
 
 export interface FileFolderHistoryRecord {
   key: string;
@@ -51,6 +51,14 @@ interface SyncPlanRecord {
   vaultRandomID: string;
 }
 
+export interface PrevSyncRecord {
+  key: string;
+  mtime: number;
+  size: number;
+  keyType: "folder" | "file";
+  vaultRandomID: string;
+}
+
 export interface InternalDBs {
   versionTbl: LocalForage;
   fileHistoryTbl: LocalForage;
@@ -58,6 +66,7 @@ export interface InternalDBs {
   syncPlansTbl: LocalForage;
   vaultRandomIDMappingTbl: LocalForage;
   loggerOutputTbl: LocalForage;
+  prevSyncRecordsTbl: LocalForage;
 }
 
 /**
@@ -148,6 +157,16 @@ const migrateDBsFrom20220108To20220326 = async (
   await db.versionTbl.setItem("version", newVer);
 };
 
+const migrateDBsFrom20220326To20250430 = async (
+  db: InternalDBs,
+  vaultRandomID: string
+) => {
+  const oldVer = 20220326;
+  const newVer = 20250430;
+  // New table prevSyncRecordsTbl is created on demand in prepareDBs
+  await db.versionTbl.setItem("version", newVer);
+};
+
 const migrateDBs = async (
   db: InternalDBs,
   oldVer: number,
@@ -163,10 +182,23 @@ const migrateDBs = async (
   if (oldVer === 20220108 && newVer === 20220326) {
     return await migrateDBsFrom20220108To20220326(db, vaultRandomID);
   }
+  if (oldVer === 20220326 && newVer === 20250430) {
+    return await migrateDBsFrom20220326To20250430(db, vaultRandomID);
+  }
   if (oldVer === 20211114 && newVer === 20220326) {
-    // TODO: more steps with more versions in the future
     await migrateDBsFrom20211114To20220108(db, vaultRandomID);
     await migrateDBsFrom20220108To20220326(db, vaultRandomID);
+    return;
+  }
+  if (oldVer === 20211114 && newVer === 20250430) {
+    await migrateDBsFrom20211114To20220108(db, vaultRandomID);
+    await migrateDBsFrom20220108To20220326(db, vaultRandomID);
+    await migrateDBsFrom20220326To20250430(db, vaultRandomID);
+    return;
+  }
+  if (oldVer === 20220108 && newVer === 20250430) {
+    await migrateDBsFrom20220108To20220326(db, vaultRandomID);
+    await migrateDBsFrom20220326To20250430(db, vaultRandomID);
     return;
   }
   if (newVer < oldVer) {
@@ -206,6 +238,10 @@ export const prepareDBs = async (
     loggerOutputTbl: localforage.createInstance({
       name: DEFAULT_DB_NAME,
       storeName: DEFAULT_TBL_LOGGER_OUTPUT,
+    }),
+    prevSyncRecordsTbl: localforage.createInstance({
+      name: DEFAULT_DB_NAME,
+      storeName: DEFAULT_TBL_PREV_SYNC_RECORDS,
     }),
   } as InternalDBs;
 
@@ -256,6 +292,46 @@ export const prepareDBs = async (
     db: db,
     vaultRandomID: vaultRandomID,
   };
+};
+
+export const clearAllPrevSyncRecordsByVault = async (
+  db: InternalDBs,
+  vaultRandomID: string
+) => {
+  const keys = (await db.prevSyncRecordsTbl.keys()).filter((x) =>
+    x.startsWith(`${vaultRandomID}\t`)
+  );
+  await db.prevSyncRecordsTbl.removeItems(keys);
+};
+
+export const savePrevSyncRecordsByVault = async (
+  db: InternalDBs,
+  vaultRandomID: string,
+  records: PrevSyncRecord[]
+) => {
+  // Clear old records first
+  await clearAllPrevSyncRecordsByVault(db, vaultRandomID);
+  // Save new records
+  const ps = [] as Promise<void>[];
+  for (const record of records) {
+    ps.push(
+      db.prevSyncRecordsTbl.setItem(`${vaultRandomID}\t${record.key}`, record)
+    );
+  }
+  await Promise.all(ps);
+};
+
+export const loadPrevSyncRecordsByVault = async (
+  db: InternalDBs,
+  vaultRandomID: string
+) => {
+  const records = [] as PrevSyncRecord[];
+  await db.prevSyncRecordsTbl.iterate((value, key, iterationNumber) => {
+    if (key.startsWith(`${vaultRandomID}\t`)) {
+      records.push(value as PrevSyncRecord);
+    }
+  });
+  return records;
 };
 
 export const destroyDBs = async () => {
