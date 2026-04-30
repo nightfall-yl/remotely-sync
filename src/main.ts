@@ -87,11 +87,11 @@ const DEFAULT_SETTINGS: ThirdPartySyncPluginSettings = {
   skipSizeLargerThan: -1,
   enableStatusBarInfo: undefined,
   lastSynced: -1,
-  trashLocal: false,
   syncTrash: false,
   syncBookmarks: true,
   syncDirection: "bidirectional",
   protectModifyPercentage: 50,
+  deleteToWhere: "system_trash",
 };
 
 interface OAuth2Info {
@@ -952,6 +952,9 @@ export default class ThirdPartySyncPlugin extends Plugin {
     if (this.settings.s3.disableS3MetadataSync == undefined) {
       this.settings.s3.disableS3MetadataSync = false;
     }
+    if (this.settings.deleteToWhere === undefined) {
+      this.settings.deleteToWhere = "system_trash";
+    }
   }
 
   async checkIfPresetRulesFollowed() {
@@ -1020,11 +1023,10 @@ export default class ThirdPartySyncPlugin extends Plugin {
   }
 
   async trash(x: string) {
-    if (this.settings.trashLocal) {
+    if (this.settings.deleteToWhere === "obsidian_trash") {
       await this.app.vault.adapter.trashLocal(x);
-      return;
     } else {
-      // Attempt using system trash, if it fails fallback to trashing into .trash folder
+      // system_trash: attempt system trash first, fallback to .trash folder
       if (!(await this.app.vault.adapter.trashSystem(x))) {
         await this.app.vault.adapter.trashLocal(x);
       }
@@ -1201,7 +1203,7 @@ export default class ThirdPartySyncPlugin extends Plugin {
       for (let i = 0; i < localConfigContents.length; i++) {
         const file = localConfigContents[i];
 
-        if (file.key.includes(".obsidian/plugins/remotely-secure/")) {
+        if (file.key.includes(".obsidian/plugins/obsidian-third-party-sync/")) {
           continue;
         }
 

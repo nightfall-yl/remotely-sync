@@ -29,10 +29,10 @@ const isFolderToSkip = (x: string) => {
 
 const isPluginDirItself = (x: string, pluginId: string) => {
   return (
-    x === "remotely-secure" ||
-    x === "remotely-secure/" ||
-    x.endsWith("/remotely-secure") ||
-    x.endsWith("/remotely-secure/")
+    x === pluginId ||
+    x === pluginId + "/" ||
+    x.endsWith("/" + pluginId) ||
+    x.endsWith("/" + pluginId + "/")
   );
 };
 
@@ -112,7 +112,7 @@ export const listFilesInObsFolder = async (
             }
             
             if (isInsideSelfPlugin && !isLikelyPluginSubFiles(iter2)) {
-              // special treatment for remotely-secure folder
+              // special treatment for self plugin folder
               continue;
             }
             q.push(iter2);
@@ -122,7 +122,7 @@ export const listFilesInObsFolder = async (
               continue;
             }
             if (isInsideSelfPlugin && !isLikelyPluginSubFiles(iter2)) {
-              // special treatment for remotely-secure folder
+              // special treatment for self plugin folder
               continue;
             }
             q.push(iter2);

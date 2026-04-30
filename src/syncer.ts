@@ -83,7 +83,7 @@ export const syncer = async (
       fsEncrypt,
       settings.serviceType,
       settings.skipSizeLargerThan,
-      settings.conflictAction || "keep_local",
+      settings.conflictAction || "keep_newer",
       settings.syncDirection,
       triggerSource,
       configDir

@@ -78,7 +78,6 @@ export interface ThirdPartySyncPluginSettings {
   skipSizeLargerThan?: number;
   enableStatusBarInfo: boolean;
   lastSynced?: number;
-  trashLocal: boolean;
   syncTrash: boolean;
   syncBookmarks: boolean;
   syncDirection?: SyncDirectionType;
@@ -86,6 +85,7 @@ export interface ThirdPartySyncPluginSettings {
   ignorePaths?: string[];
   onlyAllowPaths?: string[];
   conflictAction?: string;
+  deleteToWhere?: DeleteToWhereType;
 
   /**
    * @deprecated
@@ -101,9 +101,9 @@ export interface RemoteItem {
   etag?: string;
 }
 
-export const COMMAND_URI = "remotely-secure";
-export const COMMAND_CALLBACK = "remotely-secure-cb";
-export const COMMAND_CALLBACK_ONEDRIVE = "remotely-sync-cb-onedrive";
+export const COMMAND_URI = "third-party-sync";
+export const COMMAND_CALLBACK = "third-party-sync-cb";
+export const COMMAND_CALLBACK_ONEDRIVE = "third-party-sync-cb-onedrive";
 
 export interface UriParams {
   func?: string;
@@ -182,6 +182,8 @@ export const DEFAULT_SYNC_PLANS_HISTORY_FILE_PREFIX =
 export const DEFAULT_LOG_HISTORY_FILE_PREFIX = "log_hist_exported_on_";
 
 export type SyncTriggerSourceType = "manual" | "auto" | "dry" | "autoOnceInit";
+
+export type DeleteToWhereType = "system_trash" | "obsidian_trash";
 
 export type SyncDirectionType =
   | "bidirectional"

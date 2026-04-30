@@ -323,7 +323,7 @@ const isSkipItem = (
   if (syncConfigDir && isInsideObsFolder(key, configDir)) {
     // Special exception for Obsidian Third-party Sync's data.json file - always skip.
     // No point to sync our plugin settings, causes endless syncing because we persist last sync time
-    if (key == configDir + '/plugins/remotely-secure/' + FILE_NAME_FOR_DATA_JSON) {
+    if (key == configDir + '/plugins/obsidian-third-party-sync/' + FILE_NAME_FOR_DATA_JSON) {
       return true;
     }
     return false;

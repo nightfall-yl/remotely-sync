@@ -1,4 +1,3 @@
-import { PublicClientApplication } from "@azure/msal-browser";
 import { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import type {
   DriveItem,
@@ -79,26 +78,18 @@ export async function getAuthUrlAndVerifier(
   const verifier = await generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
 
-  const pkceCodes = {
-    challengeMethod: "S256", // Use SHA256 Algorithm
-    verifier: verifier,
-    challenge: challenge,
-  };
-
-  const authCodeUrlParams = {
-    redirectUri: REDIRECT_URI,
-    scopes: SCOPES,
-    codeChallenge: pkceCodes.challenge, // PKCE Code Challenge
-    codeChallengeMethod: pkceCodes.challengeMethod, // PKCE Code Challenge Method
-  };
-
-  const pca = new PublicClientApplication({
-    auth: {
-      clientId: clientID,
-      authority: authority,
-    },
+  // Build OAuth2 authorization URL manually (msal-browser v3 removed getAuthCodeUrl from PublicClientApplication)
+  const baseAuthority = authority.replace(/\/$/, ""); // strip trailing slash
+  const params = new URLSearchParams({
+    client_id: clientID,
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPES.join(" "),
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    response_mode: "query",
   });
-  const authCodeUrl = await pca.getAuthCodeUrl(authCodeUrlParams);
+  const authCodeUrl = `${baseAuthority}/oauth2/v2.0/authorize?${params.toString()}`;
 
   return {
     authUrl: authCodeUrl,
@@ -136,7 +127,7 @@ export const sendAuthReq = async (
   verifier: string
 ) => {
   const rsp = await requestUrl({
-    url: `${authority}/oauth2/v2.0/token`,
+    url: `${authority.replace(/\/$/, "")}/oauth2/v2.0/token`,
     method: "POST",
     contentType: "application/x-www-form-urlencoded",
     body: new URLSearchParams({
@@ -172,7 +163,7 @@ export const sendRefreshTokenReq = async (
   }).toString();
   
   const requestParams: RequestUrlParam = {
-    url: `${authority}/oauth2/v2.0/token`,
+    url: `${authority.replace(/\/$/, "")}/oauth2/v2.0/token`,
     method: "POST",
     contentType: "application/x-www-form-urlencoded",
     body: body,
@@ -269,12 +260,12 @@ const fromDriveItemToRemoteItem = (
   let key = "";
 
   // possible prefix:
-  // pure english: /drive/root:/Apps/remotely-secure/${remoteBaseDir}
-  // or localized, e.g.: /drive/root:/应用/remotely-secure/${remoteBaseDir}
+  // pure english: /drive/root:/Apps/obsidian-third-party-sync/${remoteBaseDir}
+  // or localized, e.g.: /drive/root:/应用/obsidian-third-party-sync/${remoteBaseDir}
   const FIRST_COMMON_PREFIX_REGEX =
     /^\/drive\/root:\/[^\/]+\/Remotely (Sync|Secure|Save)\//g;
   // or the root is absolute path /Livefolders,
-  // e.g.: /Livefolders/应用/remotely-secure/${remoteBaseDir}
+  // e.g.: /Livefolders/应用/obsidian-third-party-sync/${remoteBaseDir}
   const SECOND_COMMON_PREFIX_REGEX =
     /^\/Livefolders\/[^\/]+\/Remotely (Sync|Secure|Save)\//g;
 

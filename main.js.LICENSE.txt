@@ -31,10 +31,6 @@
  * http://github.com/janl/mustache.js
  */
 
-/*! @azure/msal-browser v3.30.0 2025-08-05 */
-
-/*! @azure/msal-common v14.16.1 2025-08-05 */
-
 /*! For license information please see webdav.js.LICENSE.txt */
 
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */

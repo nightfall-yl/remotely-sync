@@ -20,6 +20,7 @@ import {
   VALID_REQURL,
   WebdavAuthType,
   WebdavDepthType,
+  DeleteToWhereType,
 } from "./baseTypes";
 import {
   exportVaultSyncPlansToFiles,
@@ -400,56 +401,6 @@ class SyncConfigDirModal extends Modal {
           this.close();
         });
       });
-  }
-
-  onClose() {
-    let { contentEl } = this;
-    contentEl.empty();
-  }
-}
-
-class ExportSettingsUriModal extends Modal {
-  plugin: ThirdPartySyncPlugin;
-  constructor(app: App, plugin: ThirdPartySyncPlugin) {
-    super(app);
-    this.plugin = plugin;
-  }
-
-  onOpen() {
-    let { contentEl } = this;
-
-    const t = (x: TransItemType, vars?: any) => {
-      return this.plugin.i18n.t(x, vars);
-    };
-
-    const rawUri = exportSettingsUri(
-      this.plugin.settings,
-      this.app.vault.getName(),
-      this.plugin.manifest.version
-    );
-
-    const div1 = contentEl.createDiv();
-    t("modal_export_shortdesc")
-      .split("\n")
-      .forEach((val) => {
-        div1.createEl("p", {
-          text: val,
-        });
-      });
-
-    const div2 = contentEl.createDiv();
-    div2.createEl(
-      "button",
-      {
-        text: t("modal_export_button"),
-      },
-      (el) => {
-        el.onclick = async () => {
-          await navigator.clipboard.writeText(rawUri);
-          new Notice(t("modal_export_button_notice"));
-        };
-      }
-    );
   }
 
   onClose() {
@@ -1303,18 +1254,6 @@ export class ThirdPartySyncSettingTab extends PluginSettingTab {
     );
 
     new Setting(basicDiv)
-      .setName(t("settings_trash_locally"))
-      .setDesc(t("settings_trash_locally_desc"))
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.plugin.settings.trashLocal)
-          .onChange(async (val) => {
-            this.plugin.settings.trashLocal = val;
-            await this.plugin.saveSettings();
-          });
-      });
-
-    new Setting(basicDiv)
       .setName(t("settings_sync_trash"))
       .setDesc(t("settings_sync_trash_desc"))
       .addToggle((toggle) => {
@@ -1384,8 +1323,36 @@ export class ThirdPartySyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(advDiv)
+      .setName(t("settings_deletetowhere"))
+      .setDesc(t("settings_deletetowhere_desc"))
+      .addDropdown((dropdown) => {
+        dropdown.addOption("system_trash", t("settings_deletetowhere_system_trash"));
+        dropdown.addOption("obsidian_trash", t("settings_deletetowhere_obsidian_trash"));
+        dropdown
+          .setValue(this.plugin.settings.deleteToWhere ?? "system_trash")
+          .onChange(async (val) => {
+            this.plugin.settings.deleteToWhere = val as DeleteToWhereType;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(advDiv)
+      .setName(t("settings_conflictaction"))
+      .setDesc(t("settings_conflictaction_desc"))
+      .addDropdown((dropdown) => {
+        dropdown.addOption("keep_newer", t("settings_conflictaction_keep_newer"));
+        dropdown.addOption("keep_larger", t("settings_conflictaction_keep_larger"));
+        dropdown
+          .setValue(this.plugin.settings.conflictAction ?? "keep_newer")
+          .onChange(async (val) => {
+            this.plugin.settings.conflictAction = val;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    const syncDirSetting = new Setting(advDiv)
       .setName(t("setting_syncdirection"))
-      .setDesc("选择同步方向：双向同步、增量推送、增量拉取等")
+      .setDesc(t("setting_syncdirection_desc"))
       .addDropdown((dropdown) => {
         dropdown.addOption(
           "bidirectional",
@@ -1415,22 +1382,30 @@ export class ThirdPartySyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+    
+    // Move dropdown to be after the description
+    const settingEl = syncDirSetting.settingEl;
+    const infoEl = syncDirSetting.infoEl;
+    const controlEl = syncDirSetting.controlEl;
+    if (infoEl && controlEl) {
+      settingEl.appendChild(controlEl);
+    }
 
     new Setting(advDiv)
-      .setName(t("setting_protectmodifypercentage"))
-      .setDesc("如果修改超过百分比则中止同步")
+      .setName(t("settings_protectmodifypercentage"))
+      .setDesc(t("settings_protectmodifypercentage_desc"))
       .addDropdown((dropdown) => {
-        dropdown.addOption("0", t("setting_protectmodifypercentage_000_desc"));
+        dropdown.addOption("0", t("settings_protectmodifypercentage_000_desc"));
         dropdown.addOption("10", "10");
         dropdown.addOption("20", "20");
         dropdown.addOption("30", "30");
         dropdown.addOption("40", "40");
-        dropdown.addOption("50", t("setting_protectmodifypercentage_050_desc"));
+        dropdown.addOption("50", t("settings_protectmodifypercentage_050_desc"));
         dropdown.addOption("60", "60");
         dropdown.addOption("70", "70");
         dropdown.addOption("80", "80");
         dropdown.addOption("90", "90");
-        dropdown.addOption("100", t("setting_protectmodifypercentage_100_desc"));
+        dropdown.addOption("100", t("settings_protectmodifypercentage_100_desc"));
         dropdown
           .setValue(`${this.plugin.settings.protectModifyPercentage ?? 50}`)
           .onChange(async (val: string) => {
@@ -1487,9 +1462,35 @@ export class ThirdPartySyncSettingTab extends PluginSettingTab {
       .setName(t("settings_export"))
       .setDesc(t("settings_export_desc"))
       .addButton(async (button) => {
-        button.setButtonText(t("settings_export_desc_button"));
+        button.setButtonText(t("settings_export_s3_button"));
         button.onClick(async () => {
-          new ExportSettingsUriModal(this.app, this.plugin).open();
+          const settingsOnlyS3 = cloneDeep(this.plugin.settings);
+          delete settingsOnlyS3.onedrive;
+          delete settingsOnlyS3.webdav;
+          delete settingsOnlyS3.vaultRandomID;
+          const uri = exportSettingsUri(
+            settingsOnlyS3,
+            this.app.vault.getName(),
+            this.plugin.manifest.version
+          );
+          await navigator.clipboard.writeText(uri);
+          new Notice(t("modal_export_button_notice"));
+        });
+      })
+      .addButton(async (button) => {
+        button.setButtonText(t("settings_export_webdav_button"));
+        button.onClick(async () => {
+          const settingsOnlyWebdav = cloneDeep(this.plugin.settings);
+          delete settingsOnlyWebdav.onedrive;
+          delete settingsOnlyWebdav.s3;
+          delete settingsOnlyWebdav.vaultRandomID;
+          const uri = exportSettingsUri(
+            settingsOnlyWebdav,
+            this.app.vault.getName(),
+            this.plugin.manifest.version
+          );
+          await navigator.clipboard.writeText(uri);
+          new Notice(t("modal_export_button_notice"));
         });
       });
 
@@ -1498,7 +1499,7 @@ export class ThirdPartySyncSettingTab extends PluginSettingTab {
       .setDesc(t("settings_import_desc"))
       .addText((text) => {
         text
-          .setPlaceholder("obsidian://remotely-secure?func=settings&vault=...")
+          .setPlaceholder("obsidian://third-party-sync?func=settings&vault=&version=&data=&compressed=1")
           .onChange((value) => {
             importUriInput = value;
           });
