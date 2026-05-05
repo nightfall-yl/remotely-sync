@@ -1352,7 +1352,15 @@ export class ThirdPartySyncSettingTab extends PluginSettingTab {
 
     const syncDirSetting = new Setting(advDiv)
       .setName(t("setting_syncdirection"))
-      .setDesc(t("setting_syncdirection_desc"))
+      .setDesc(((desc: string) => {
+        const frag = document.createDocumentFragment();
+        const parts = desc.split("\n");
+        parts.forEach((part, i) => {
+          if (i > 0) frag.appendChild(document.createElement("br"));
+          frag.appendChild(document.createTextNode(part));
+        });
+        return frag;
+      })(t("setting_syncdirection_desc")))
       .addDropdown((dropdown) => {
         dropdown.addOption(
           "bidirectional",
