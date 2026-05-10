@@ -123,8 +123,8 @@ See [debugging docs](./docs/how_to_debug/README.md).
 
 ## Credit
 
-- Thanks to @fyears for the original [Remotely Save](https://github.com/remotely-save/remotely-save) plugin.
-- Thanks to @sboesen for the forked [Remotely Sync](https://github.com/sboesen/remotely-sync) plugin.
+- Thanks to @fyears for the original [Remotely Save](https://github.com/remotely-save/remotely-save) project.
+- Thanks to @sboesen for the forked [Remotely Sync](https://github.com/sboesen/remotely-sync) project, which inspired Obsidian Third-party Sync.
 
 
 ## Questions, Bugs, Suggestions
