@@ -771,74 +771,102 @@ export default class ThirdPartySyncPlugin extends Plugin {
     this.registerObsidianProtocolHandler(
       COMMAND_CALLBACK_ONEDRIVE,
       async (inputParams) => {
-        if (inputParams.code !== undefined) {
-          if (this.oauth2Info.helperModal !== undefined) {
-            this.oauth2Info.helperModal.contentEl.empty();
+        try {
+          if (inputParams.code !== undefined) {
+            if (!this.oauth2Info.verifier) {
+              throw Error("OneDrive auth verifier is missing. Please restart auth.");
+            }
 
-            t("protocol_onedrive_connecting")
-              .split("\n")
-              .forEach((val: string) => {
-                this.oauth2Info.helperModal.contentEl.createEl("p", {
-                  text: val,
+            if (this.oauth2Info.helperModal !== undefined) {
+              this.oauth2Info.helperModal.contentEl.empty();
+
+              t("protocol_onedrive_connecting")
+                .split("\n")
+                .forEach((val: string) => {
+                  this.oauth2Info.helperModal.contentEl.createEl("p", {
+                    text: val,
+                  });
                 });
-              });
-          }
+            }
 
-          let rsp = await sendAuthReqOnedrive(
-            this.settings.onedrive.clientID,
-            this.settings.onedrive.authority,
-            inputParams.code,
-            this.oauth2Info.verifier
-          );
+            let rsp = await sendAuthReqOnedrive(
+              this.settings.onedrive.clientID,
+              this.settings.onedrive.authority,
+              inputParams.code,
+              this.oauth2Info.verifier
+            );
 
-          if ((rsp as any).error !== undefined) {
-            throw Error(`${JSON.stringify(rsp)}`);
-          }
+            if ((rsp as any).error !== undefined) {
+              const errorMsg = (rsp as any).error_description || JSON.stringify(rsp);
+              throw Error(`Azure API 错误: ${errorMsg}`);
+            }
 
-          const self = this;
-          setConfigBySuccessfullAuthInplaceOnedrive(
-            this.settings.onedrive,
-            rsp as AccessCodeResponseSuccessfulType,
-            () => self.saveSettings()
-          );
+            const self = this;
+            await setConfigBySuccessfullAuthInplaceOnedrive(
+              this.settings.onedrive,
+              rsp as AccessCodeResponseSuccessfulType,
+              () => self.saveSettings()
+            );
 
-          const client = new RemoteClient(
-            "onedrive",
-            undefined,
-            undefined,
-            this.settings.onedrive,
-            this.app.vault.getName(),
-            () => self.saveSettings()
-          );
-          this.settings.onedrive.username = await client.getUserDisplayName();
-          await this.saveSettings();
+            const client = new RemoteClient(
+              "onedrive",
+              undefined,
+              undefined,
+              this.settings.onedrive,
+              this.app.vault.getName(),
+              () => self.saveSettings()
+            );
+            this.settings.onedrive.username = await client.getUser();
+            await self.saveSettings();
 
-          this.oauth2Info.verifier = ""; // reset it
-          this.oauth2Info.helperModal?.close(); // close it
-          this.oauth2Info.helperModal = undefined;
+            this.oauth2Info.verifier = ""; // reset it
+            this.oauth2Info.helperModal?.close(); // close it
+            this.oauth2Info.helperModal = undefined;
 
-          const isAuthed = this.settings.onedrive.username !== "";
-          if (this.oauth2Info.authSetting) {
-            this.oauth2Info.authSetting.settingEl.toggleClass("tp-sync-auth-hidden", isAuthed);
-          }
-          this.oauth2Info.authSetting = undefined;
+            const isAuthed = this.settings.onedrive.username !== "";
+            if (this.oauth2Info.authSetting) {
+              this.oauth2Info.authSetting.settingEl.toggleClass("tp-sync-auth-hidden", isAuthed);
+            }
+            this.oauth2Info.authSetting = undefined;
 
-          this.oauth2Info.revokeAuthSetting?.setDesc(
-            t("protocol_onedrive_connect_succ_revoke", {
+            this.oauth2Info.revokeAuthSetting?.setDesc(
+              t("protocol_onedrive_connect_succ_revoke", {
+                username: this.settings.onedrive.username,
+              })
+            );
+            if (this.oauth2Info.revokeAuthSetting) {
+              this.oauth2Info.revokeAuthSetting.settingEl.toggleClass("tp-sync-revoke-hidden", !isAuthed);
+            }
+            this.oauth2Info.revokeAuthSetting = undefined;
+
+            new Notice(t("protocol_onedrive_connect_succ_revoke", {
               username: this.settings.onedrive.username,
-            })
-          );
-          this.oauth2Info.revokeAuthSetting = undefined;
-          if (this.oauth2Info.revokeAuthSetting) {
-            this.oauth2Info.revokeAuthSetting.settingEl.toggleClass("tp-sync-revoke-hidden", !isAuthed);
+            }));
+          } else {
+            new Notice(t("protocol_onedrive_connect_fail"));
+            throw Error(
+              t("protocol_onedrive_connect_unknown", {
+                params: JSON.stringify(inputParams),
+              })
+            );
           }
-        } else {
-          new Notice(t("protocol_onedrive_connect_fail"));
-          throw Error(
-            t("protocol_onedrive_connect_unknown", {
-              params: JSON.stringify(inputParams),
-            })
-          );
+        } catch (err: any) {
+          console.error("OneDrive auth protocol handler error:", err);
+          
+          // 关闭 helper modal 并显示错误
+          if (this.oauth2Info.helperModal) {
+            this.oauth2Info.helperModal.contentEl.empty();
+            this.oauth2Info.helperModal.contentEl.createEl("p", { text: "鉴权失败" });
+            this.oauth2Info.helperModal.contentEl.createEl("p", { 
+              text: err.message || "未知错误",
+              cls: "onedrive-auth-error"
+            });
+          }
+          
+          // 重置状态
+          this.oauth2Info.verifier = "";
+          this.oauth2Info.authSetting = undefined;
+          this.oauth2Info.revokeAuthSetting = undefined;
         }
       }
     );

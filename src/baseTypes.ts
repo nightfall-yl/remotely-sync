@@ -103,7 +103,7 @@ export interface RemoteItem {
 
 export const COMMAND_URI = "third-party-sync";
 export const COMMAND_CALLBACK = "third-party-sync-cb";
-export const COMMAND_CALLBACK_ONEDRIVE = "remotely-save-cb-onedrive";
+export const COMMAND_CALLBACK_ONEDRIVE = "third-party-sync-onedrive";
 
 export interface UriParams {
   func?: string;

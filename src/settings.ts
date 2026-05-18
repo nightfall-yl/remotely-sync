@@ -41,6 +41,9 @@ import { RemoteClient } from "./remote";
 import {
   DEFAULT_ONEDRIVE_CONFIG,
   getAuthUrlAndVerifier as getAuthUrlAndVerifierOnedrive,
+  sendAuthReq as sendAuthReqOnedrive,
+  setConfigBySuccessfullAuthInplace as setConfigBySuccessfullAuthInplaceOnedrive,
+  AccessCodeResponseSuccessfulType,
 } from "./remoteForOnedrive";
 import { messyConfigToNormal } from "./configPersist";
 import type { TransItemType } from "./i18n";
@@ -225,6 +228,7 @@ class ChangeRemoteBaseDirModal extends Modal {
 export class OnedriveAuthModal extends Modal {
   readonly plugin: ThirdPartySyncPlugin;
   readonly revokeAuthSetting: Setting;
+
   constructor(
     app: App,
     plugin: ThirdPartySyncPlugin,
@@ -255,11 +259,12 @@ export class OnedriveAuthModal extends Modal {
           text: val,
         });
       });
-    const div2 = contentEl.createDiv();
-    div2.createEl(
+
+    contentEl.createDiv().createEl(
       "button",
       {
         text: t("modal_onedriveauth_copybutton"),
+        cls: "mod-cta",
       },
       (el) => {
         el.onclick = async () => {

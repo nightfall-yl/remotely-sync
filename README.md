@@ -76,7 +76,7 @@ npm install
 # 开发构建（监听文件变化自动重编译）
 npm run dev
 
-# 生产构建（webpack）
+# 生产构建（esbuild）
 npm run build
 ```
 

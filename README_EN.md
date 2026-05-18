@@ -76,7 +76,7 @@ npm install
 # Development build (watch mode)
 npm run dev
 
-# Production build (webpack)
+# Production build (esbuild)
 npm run build
 ```
 

@@ -26,11 +26,12 @@ import { log } from "./moreOnLog";
 
 const SCOPES = ["User.Read", "Files.ReadWrite.AppFolder", "offline_access"];
 const REDIRECT_URI = `obsidian://${COMMAND_CALLBACK_ONEDRIVE}`;
+const ONEDRIVE_AUTH_TIMEOUT_MS = 30000;
 
 export const DEFAULT_ONEDRIVE_CONFIG: OnedriveConfig = {
   accessToken: "",
-  clientID: "3729fc1c-0af2-4bec-9376-d7ac4f0ff806",
-  authority: "https://login.microsoftonline.com/common/",
+  clientID: "ad95e28f-d89a-43db-8ce6-0e64ef1283aa",
+  authority: "https://login.microsoftonline.com/consumers/",
   refreshToken: "",
   accessTokenExpiresInSeconds: 0,
   accessTokenExpiresAtTime: 0,
@@ -126,25 +127,66 @@ export const sendAuthReq = async (
   authCode: string,
   verifier: string
 ) => {
-  const rsp = await requestUrl({
-    url: `${authority.replace(/\/$/, "")}/oauth2/v2.0/token`,
-    method: "POST",
-    contentType: "application/x-www-form-urlencoded",
-    body: new URLSearchParams({
-      tenant: "consumers",
-      client_id: clientID,
-      scope: SCOPES.join(" "),
-      code: authCode,
-      redirect_uri: REDIRECT_URI,
-      grant_type: "authorization_code",
-      code_verifier: verifier,
-    }).toString(),
-  }).json;
+  try {
+    // 从 authority URL 提取 tenant
+    const authorityUrl = new URL(authority);
+    const tenant = authorityUrl.pathname.replace(/^\//, "") || "common";
 
-  if (rsp.error !== undefined) {
-    return rsp as AccessCodeResponseFailedType;
-  } else {
-    return rsp as AccessCodeResponseSuccessfulType;
+    console.log("OneDrive token exchange:", {
+      url: `${authority.replace(/\/$/, "")}/oauth2/v2.0/token`,
+      tenant,
+      client_id: clientID,
+      redirect_uri: REDIRECT_URI,
+      has_code: !!authCode,
+      has_verifier: !!verifier,
+    });
+
+    const requestPromise = requestUrl({
+      url: `${authority.replace(/\/$/, "")}/oauth2/v2.0/token`,
+      method: "POST",
+      contentType: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({
+        tenant: tenant,
+        client_id: clientID,
+        scope: SCOPES.join(" "),
+        code: authCode,
+        redirect_uri: REDIRECT_URI,
+        grant_type: "authorization_code",
+        code_verifier: verifier,
+      }).toString(),
+    }).json;
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      window.setTimeout(() => {
+        reject(Error("请求超时（30秒）。请检查网络连接后重试。"));
+      }, ONEDRIVE_AUTH_TIMEOUT_MS);
+    });
+
+    const rsp = await Promise.race([requestPromise, timeoutPromise]);
+
+    console.log("OneDrive token response:", rsp);
+
+    if (rsp.error !== undefined) {
+      console.error("OneDrive auth error:", rsp);
+      const errorMsg = rsp.error_description || rsp.error || "未知错误";
+      return {
+        ...rsp as AccessCodeResponseFailedType,
+        error_description: errorMsg,
+      } as AccessCodeResponseFailedType;
+    } else {
+      return rsp as AccessCodeResponseSuccessfulType;
+    }
+  } catch (err: any) {
+    console.error("OneDrive auth request failed:", err);
+    // 尝试解析响应体获取更详细的错误信息
+    if (err.response && err.response.data) {
+      const errorData = typeof err.response.data === 'string' 
+        ? JSON.parse(err.response.data) 
+        : err.response.data;
+      throw Error(`Azure API 错误: ${errorData.error_description || errorData.error || JSON.stringify(errorData)}`);
+    }
+    
+    throw Error(`网络请求失败: ${err.message || err}`);
   }
 };
 
@@ -169,7 +211,13 @@ export const sendRefreshTokenReq = async (
     body: body,
   };
   
-  const rsp = await requestUrl(requestParams).json;
+  const requestPromise = requestUrl(requestParams).json;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    window.setTimeout(() => {
+      reject(Error("请求超时（30秒）。请检查网络连接后重试。"));
+    }, ONEDRIVE_AUTH_TIMEOUT_MS);
+  });
+  const rsp = await Promise.race([requestPromise, timeoutPromise]);
 
   if (rsp.error !== undefined) {
     return rsp as AccessCodeResponseFailedType;
@@ -185,7 +233,7 @@ export const setConfigBySuccessfullAuthInplace = async (
 ) => {
   config.accessToken = authRes.access_token;
   config.accessTokenExpiresAtTime =
-    Date.now() + authRes.expires_in - 5 * 60 * 1000;
+    Date.now() + authRes.expires_in * 1000 - 5 * 60 * 1000;
   config.accessTokenExpiresInSeconds = authRes.expires_in;
   config.refreshToken = authRes.refresh_token;
 
